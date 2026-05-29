@@ -7,7 +7,19 @@ import (
 	"golang.org/x/term"
 )
 
-// RenderMarkdown renders markdown text using glamour with auto-detected style.
+// glamourStyle returns the glamour style name ("dark" or "light") for the
+// current terminal, resolved without probing the terminal. Using a fixed
+// style instead of glamour.WithAutoStyle() avoids the OSC 11 background query,
+// whose raw response can otherwise leak onto the screen.
+func glamourStyle() string {
+	if BackgroundIsDark() {
+		return "dark"
+	}
+	return "light"
+}
+
+// RenderMarkdown renders markdown text using glamour with a style chosen from
+// the resolved terminal background (see BackgroundIsDark).
 // Returns the rendered markdown or the original text if rendering fails.
 // Word wraps at terminal width (capped at 100 chars for readability).
 func RenderMarkdown(markdown string) string {
@@ -25,7 +37,7 @@ func RenderMarkdown(markdown string) string {
 	}
 
 	renderer, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStandardStyle(glamourStyle()),
 		glamour.WithWordWrap(wrapWidth),
 	)
 	if err != nil {

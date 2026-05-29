@@ -13,6 +13,12 @@ func init() {
 	} else {
 		lipgloss.SetColorProfile(termenv.TrueColor)
 	}
+	// Resolve the background explicitly so lipgloss never issues an OSC 11
+	// query to auto-detect it. That probe can leak the terminal's raw response
+	// (e.g. "11;rgb:0a0a/0c0c/1010") onto the screen on terminals that reply
+	// asynchronously. Setting it here marks the value as explicit, which makes
+	// lipgloss skip the probe when resolving AdaptiveColor.
+	lipgloss.SetHasDarkBackground(BackgroundIsDark())
 }
 
 // Ayu theme color palette
