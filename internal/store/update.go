@@ -226,7 +226,13 @@ func (s *Store) UpdateDescription(id, description string) error {
 }
 
 // UpdateBody replaces the body and recalculates the content hash.
+// The body is normalized to end with a newline before both the write and the
+// hash: vlt's Write guarantees a trailing newline on disk, so hashing the
+// un-normalized input would make nd doctor report drift on the next read.
 func (s *Store) UpdateBody(id, body string) error {
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
 	if err := s.vault.Write(id, body, false); err != nil {
 		return err
 	}

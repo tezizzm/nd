@@ -1859,3 +1859,44 @@ func TestDepRemoveAppendsHistory(t *testing.T) {
 		t.Errorf("A body should contain dep_removed history:\n%s", aRead.Body)
 	}
 }
+
+// TestUpdateBody_HashMatchesReadBack guards the nd doctor invariant: the
+// stored content_hash must equal the hash of the body as read back from disk.
+// vlt's Write normalizes the file to end with a trailing newline, so
+// UpdateBody must apply the same normalization before hashing -- otherwise a
+// body without a final newline (e.g. from a body-file) produces phantom
+// [HASH] drift reports.
+func TestUpdateBody_HashMatchesReadBack(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Init(dir, "TST", "tester")
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	issue, err := s.CreateIssue("Hash invariant", "desc", "task", 2, "", nil, "")
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	bodies := []string{
+		"## Description\n\nno trailing newline",
+		"## Description\n\nwith trailing newline\n",
+	}
+	for _, body := range bodies {
+		if err := s.UpdateBody(issue.ID, body); err != nil {
+			t.Fatalf("UpdateBody(%q): %v", body, err)
+		}
+
+		read, err := s.ReadIssue(issue.ID)
+		if err != nil {
+			t.Fatalf("ReadIssue: %v", err)
+		}
+
+		// Same check nd doctor performs.
+		expected := enforce.ComputeContentHash(read.Body)
+		if read.ContentHash != expected {
+			t.Errorf("UpdateBody(%q): stored hash %s != read-back hash %s -- nd doctor would report drift",
+				body, read.ContentHash, expected)
+		}
+	}
+}
