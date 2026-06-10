@@ -148,6 +148,114 @@ func TestResolveVaultDir_WorktreeFallbackFindsMainVault(t *testing.T) {
 	}
 }
 
+func TestResolveVaultDir_SiblingWorktreeFindsMainCheckoutConfig(t *testing.T) {
+	base := t.TempDir()
+
+	// Main repo with a real .git dir and the shared config in its checkout.
+	mainRepo := filepath.Join(base, "main-repo")
+	mainGitDir := filepath.Join(mainRepo, ".git")
+	if err := os.MkdirAll(filepath.Join(mainRepo, ".vault"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := "# nd shared-worktree state\nmode: git_common_dir\npath: paivot/nd-vault\n"
+	if err := os.WriteFile(filepath.Join(mainRepo, sharedVaultConfigRelPath), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sibling worktree OUTSIDE the main repo: upward walks never reach the
+	// main checkout, and its branch predates the config commit (no config
+	// in the worktree checkout).
+	worktree := filepath.Join(base, "wt")
+	worktreeGitDir := filepath.Join(mainGitDir, "worktrees", "wt")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(worktreeGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitPtr := "gitdir: " + filepath.ToSlash(worktreeGitDir) + "\n"
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte(gitPtr), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreeGitDir, "commondir"), []byte("../..\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWD) }()
+	if err := os.Chdir(worktree); err != nil {
+		t.Fatal(err)
+	}
+
+	oldVault := vaultDir
+	vaultDir = ""
+	defer func() { vaultDir = oldVault }()
+
+	got := resolveVaultDir()
+	if resolved, rerr := filepath.EvalSymlinks(got); rerr == nil {
+		got = resolved
+	}
+	want := filepath.Join(mainGitDir, "paivot", "nd-vault")
+	if resolved, rerr := filepath.EvalSymlinks(want); rerr == nil {
+		want = resolved
+	}
+	if got != want {
+		t.Fatalf("resolveVaultDir() from sibling worktree = %q, want shared vault %q", got, want)
+	}
+}
+
+func TestResolveVaultDir_FallsBackToInitializedSharedVault(t *testing.T) {
+	base := t.TempDir()
+
+	// Main repo, NO shared config anywhere, but the shared vault under the
+	// git common dir is initialized -- it is the live source of record.
+	mainRepo := filepath.Join(base, "main-repo")
+	mainGitDir := filepath.Join(mainRepo, ".git")
+	sharedVault := filepath.Join(mainGitDir, "paivot", "nd-vault")
+	if err := os.MkdirAll(sharedVault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedVault, ".nd.yaml"), []byte("vault: ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A stale legacy local vault must lose to the initialized shared vault.
+	legacyVault := filepath.Join(mainRepo, ".vault")
+	if err := os.MkdirAll(legacyVault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyVault, ".nd.yaml"), []byte("vault: legacy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWD) }()
+	if err := os.Chdir(mainRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	oldVault := vaultDir
+	vaultDir = ""
+	defer func() { vaultDir = oldVault }()
+
+	got := resolveVaultDir()
+	if resolved, rerr := filepath.EvalSymlinks(got); rerr == nil {
+		got = resolved
+	}
+	want := sharedVault
+	if resolved, rerr := filepath.EvalSymlinks(want); rerr == nil {
+		want = resolved
+	}
+	if got != want {
+		t.Fatalf("resolveVaultDir() = %q, want initialized shared vault %q", got, want)
+	}
+}
+
 func setupSharedWorktree(t *testing.T) (projectRoot, sharedVault string) {
 	t.Helper()
 

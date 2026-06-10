@@ -41,6 +41,11 @@ func init() {
 
 const sharedVaultConfigRelPath = ".vault/.nd-shared.yaml"
 
+// Conventional shared vault location under the git common dir, written by
+// `pvg nd root --ensure`. Used only as a convergence fallback when no
+// checkout-visible config exists.
+const sharedVaultDefaultRelPath = "paivot/nd-vault"
+
 // resolveVaultDir returns the nd vault directory.
 //
 // Repos that opt into shared worktree state via `.vault/.nd-shared.yaml` resolve
@@ -64,6 +69,28 @@ func resolveVaultDir() string {
 
 	if path, err := resolveSharedVaultDir(dir); err == nil {
 		return path
+	}
+
+	// Convergence fallbacks for linked worktrees and stale branches whose
+	// checkout does not (yet) carry the tracked shared config. Without
+	// these, agents in different worktrees resolve divergent vault views.
+	if commonDir, err := gitCommonDir(dir); err == nil {
+		// The main checkout may hold the config even when this worktree
+		// branched before it was committed.
+		if filepath.Base(commonDir) == ".git" {
+			mainConfig := filepath.Join(filepath.Dir(commonDir), sharedVaultConfigRelPath)
+			if _, statErr := os.Stat(mainConfig); statErr == nil {
+				if mode, relPath, perr := parseSharedVaultConfig(mainConfig); perr == nil && mode == "git_common_dir" {
+					return filepath.Join(commonDir, relPath)
+				}
+			}
+		}
+		// Or the shared vault may already be initialized even when no
+		// visible checkout carries the config.
+		shared := filepath.Join(commonDir, sharedVaultDefaultRelPath)
+		if _, statErr := os.Stat(filepath.Join(shared, ".nd.yaml")); statErr == nil {
+			return shared
+		}
 	}
 
 	if path, err := resolveLocalVaultDir(dir); err == nil {
