@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -253,6 +255,161 @@ func TestResolveVaultDir_FallsBackToInitializedSharedVault(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("resolveVaultDir() = %q, want initialized shared vault %q", got, want)
+	}
+}
+
+func TestVaultDivergence(t *testing.T) {
+	dir := t.TempDir()
+	vault := filepath.Join(dir, ".vault")
+	if err := os.MkdirAll(vault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if vaultDivergence(vault, vault) {
+		t.Error("identical paths should not diverge")
+	}
+	if vaultDivergence(filepath.Join(dir, "sub", "..", ".vault"), vault) {
+		t.Error("lexically equivalent paths should not diverge")
+	}
+
+	other := filepath.Join(dir, "shared", "nd-vault")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !vaultDivergence(other, vault) {
+		t.Error("different paths should diverge")
+	}
+
+	if vaultDivergence("", vault) || vaultDivergence(other, "") {
+		t.Error("empty paths should never diverge")
+	}
+
+	// Symlink to the same vault must not be reported as divergence.
+	link := filepath.Join(dir, "link-vault")
+	if err := os.Symlink(vault, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	if vaultDivergence(link, vault) {
+		t.Error("symlinked path to the same vault should not diverge")
+	}
+}
+
+// captureDivergenceWarning runs resolveVaultDir with a fresh warning state and
+// returns whatever was written to stderr.
+func captureDivergenceWarning(t *testing.T) string {
+	t.Helper()
+
+	oldWarned := vaultDivergenceWarned
+	vaultDivergenceWarned = false
+	defer func() { vaultDivergenceWarned = oldWarned }()
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = oldStderr }()
+
+	resolveVaultDir()
+
+	_ = w.Close()
+	os.Stderr = oldStderr
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+// setupStaleLocalVault creates a repo whose initialized shared vault wins
+// resolution while a stale local .vault still exists in the checkout, then
+// chdirs into it. Returns a cleanup-managed environment via t.Cleanup.
+func setupStaleLocalVault(t *testing.T) {
+	t.Helper()
+
+	base := t.TempDir()
+	mainRepo := filepath.Join(base, "main-repo")
+	sharedVault := filepath.Join(mainRepo, ".git", "paivot", "nd-vault")
+	if err := os.MkdirAll(sharedVault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedVault, ".nd.yaml"), []byte("vault: ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleVault := filepath.Join(mainRepo, ".vault")
+	if err := os.MkdirAll(staleVault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleVault, ".nd.yaml"), []byte("vault: stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	if err := os.Chdir(mainRepo); err != nil {
+		t.Fatal(err)
+	}
+
+	oldVault := vaultDir
+	vaultDir = ""
+	t.Cleanup(func() { vaultDir = oldVault })
+}
+
+func TestResolveVaultDir_WarnsOnStaleLocalVault(t *testing.T) {
+	setupStaleLocalVault(t)
+
+	out := captureDivergenceWarning(t)
+	if !strings.Contains(out, "ignoring local .vault at") {
+		t.Errorf("expected stale-vault warning on stderr, got %q", out)
+	}
+	if !strings.Contains(out, "stale worktree copy?") {
+		t.Errorf("warning should mention stale worktree copy, got %q", out)
+	}
+}
+
+func TestResolveVaultDir_QuietSuppressesDivergenceWarning(t *testing.T) {
+	setupStaleLocalVault(t)
+
+	oldQuiet := quiet
+	quiet = true
+	defer func() { quiet = oldQuiet }()
+
+	out := captureDivergenceWarning(t)
+	if out != "" {
+		t.Errorf("quiet should suppress the divergence warning, got %q", out)
+	}
+}
+
+func TestResolveVaultDir_NoWarningWhenLocalVaultResolved(t *testing.T) {
+	base := t.TempDir()
+	projectRoot := filepath.Join(base, "repo")
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".vault"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, ".vault", ".nd.yaml"), []byte("version: \"1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWD) }()
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	oldVault := vaultDir
+	vaultDir = ""
+	defer func() { vaultDir = oldVault }()
+
+	out := captureDivergenceWarning(t)
+	if out != "" {
+		t.Errorf("no warning expected when the local .vault is the resolved vault, got %q", out)
 	}
 }
 

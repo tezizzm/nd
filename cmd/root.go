@@ -46,14 +46,23 @@ const sharedVaultConfigRelPath = ".vault/.nd-shared.yaml"
 // checkout-visible config exists.
 const sharedVaultDefaultRelPath = "paivot/nd-vault"
 
-// resolveVaultDir returns the nd vault directory.
+// resolveVaultDir returns the nd vault directory and warns (once, on stderr)
+// when a local .vault is being shadowed by the resolved vault -- typically a
+// stale gitignored copy left behind in a secondary git worktree.
+func resolveVaultDir() string {
+	resolved := resolveVaultDirPath()
+	maybeWarnVaultDivergence(resolved)
+	return resolved
+}
+
+// resolveVaultDirPath returns the nd vault directory.
 //
 // Repos that opt into shared worktree state via `.vault/.nd-shared.yaml` resolve
 // their live vault from the repository's git common dir. Other repos fall back
 // to the nearest local `.vault`. When running inside a secondary git worktree
 // where `.vault` is gitignored and absent, the resolver falls back to the main
 // worktree's `.vault`.
-func resolveVaultDir() string {
+func resolveVaultDirPath() string {
 	if vaultDir != "" {
 		return vaultDir
 	}
@@ -105,6 +114,57 @@ func resolveVaultDir() string {
 	}
 
 	return ".vault"
+}
+
+// vaultDivergenceWarned ensures the divergence warning fires at most once per
+// invocation, not once per store operation.
+var vaultDivergenceWarned bool
+
+// maybeWarnVaultDivergence warns on stderr when a local .vault candidate
+// exists but a different vault was resolved (shared vault or main-worktree
+// fallback). A stale gitignored .vault/ in a secondary worktree still carries
+// old issues/ copies that mislead anyone reading the files directly. The
+// warning goes to stderr only -- JSON consumers read stdout -- and is
+// suppressed by the global --quiet flag.
+func maybeWarnVaultDivergence(resolved string) {
+	if quiet || vaultDivergenceWarned {
+		return
+	}
+	vaultDivergenceWarned = true
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	local, err := resolveLocalVaultDir(cwd)
+	if err != nil {
+		return
+	}
+	if vaultDivergence(resolved, local) {
+		errorf("using vault %s; ignoring local .vault at %s (stale worktree copy?)", resolved, local)
+	}
+}
+
+// vaultDivergence reports whether the local .vault candidate points somewhere
+// other than the resolved vault. Paths are compared after symlink resolution
+// when resolvable, falling back to lexical cleaning.
+func vaultDivergence(resolved, localCandidate string) bool {
+	if resolved == "" || localCandidate == "" {
+		return false
+	}
+	return canonicalPath(resolved) != canonicalPath(localCandidate)
+}
+
+// canonicalPath normalizes a path for comparison: absolute, symlinks resolved
+// when possible, lexically cleaned otherwise.
+func canonicalPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		return real
+	}
+	return filepath.Clean(p)
 }
 
 func parentDir(s string) string {
