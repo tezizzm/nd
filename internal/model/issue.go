@@ -1,7 +1,9 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -169,6 +171,46 @@ type Issue struct {
 	// Runtime fields -- not serialized to YAML frontmatter.
 	Body     string `yaml:"-"`
 	FilePath string `yaml:"-"`
+}
+
+// MarshalJSON augments an issue's JSON form with a computed AllBlockedBy field:
+// the deduplicated, sorted lifetime union of BlockedBy (still-active blockers)
+// and WasBlockedBy (blockers already satisfied and archived when they closed).
+// A satisfied edge is still an edge of the planned DAG, so downstream lints and
+// gates that reconcile a dependency graph across an epic's lifetime must read
+// AllBlockedBy rather than BlockedBy alone -- otherwise they lose edges as the
+// epic completes and blockers close. The field is JSON-only; it never appears
+// in the YAML issue files. The existing CamelCase edge fields are unchanged.
+func (i Issue) MarshalJSON() ([]byte, error) {
+	type issueAlias Issue // strips MarshalJSON to avoid infinite recursion
+	return json.Marshal(struct {
+		issueAlias
+		AllBlockedBy []string `json:"AllBlockedBy"`
+	}{
+		issueAlias:   issueAlias(i),
+		AllBlockedBy: allBlockedByUnion(i.BlockedBy, i.WasBlockedBy),
+	})
+}
+
+// allBlockedByUnion returns the deduplicated, sorted union of active and
+// archived blockers. Returns nil (marshals like the sibling edge fields) when
+// the issue never had a blocker.
+func allBlockedByUnion(active, archived []string) []string {
+	if len(active) == 0 && len(archived) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(active)+len(archived))
+	var out []string
+	for _, edges := range [][]string{active, archived} {
+		for _, id := range edges {
+			if !seen[id] {
+				seen[id] = true
+				out = append(out, id)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Validate checks that required fields are populated and values are in range.

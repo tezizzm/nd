@@ -220,6 +220,28 @@ List output uses a compact format with colored priority and type indicators:
 
 Color is automatically disabled for piped output (non-TTY). Respects `NO_COLOR`, `CLICOLOR=0`, and `CLICOLOR_FORCE` environment variables.
 
+### JSON Output and the Dependency Link Lifecycle
+
+`nd list --json` and `nd show --json` emit issues with CamelCase keys (the Go
+field names): `BlockedBy`, `WasBlockedBy`, `Blocks`, `Follows`, `Related`,
+`LedTo`, etc.
+
+A dependency edge is **archived, not deleted, when it is satisfied**. When a
+blocking issue closes, nd moves the edge from `BlockedBy` to `WasBlockedBy` (and
+mirrors the resulting execution order in `Follows`). A satisfied edge is still
+an edge of the planned DAG.
+
+Because of this, the JSON also carries a computed convenience field:
+
+- **`AllBlockedBy`** -- the deduplicated, sorted lifetime union of `BlockedBy`
+  (still active) and `WasBlockedBy` (already satisfied).
+
+Lints and gates that reconcile a dependency graph across an issue's lifetime
+MUST read `AllBlockedBy`, not `BlockedBy` alone -- otherwise they lose edges as
+blockers close and report phantom "missing dependency" drift over a correctly
+executed DAG. `AllBlockedBy` is JSON-only; it never appears in the YAML issue
+files, and unmarshaling JSON back into an issue ignores it.
+
 ## ID Format
 
 Issue IDs use a `PREFIX-HASH` format where the hash is 4 base36 characters (0-9, a-z) derived from SHA-256. This matches the beads (`bd`) ID format for interoperability.
